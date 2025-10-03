@@ -1,0 +1,1525 @@
+import streamlit as st
+import pandas as pd
+import pydeck as pdk
+from snowflake.snowpark.context import get_active_session
+import numpy as np
+import warnings
+warnings.filterwarnings('ignore')
+
+# =============================================================================
+# CONFIGURATION VARIABLES - Edit these to customize for your use case
+# =============================================================================
+
+# Database Configuration
+DATABASE_TABLE_1 = "DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_1"
+DATABASE_TABLE_2 = "DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_2"
+
+# TABLE 1 Configuration - Primary Analysis Tab
+TABLE_1_DIMENSION_1_LABEL = "Major"  # Example: "Department", "Category", "Region"
+TABLE_1_DIMENSION_2_LABEL = "Department"  # Example: "Sub-category", "Team"
+TABLE_1_DIMENSION_3_LABEL = "Program"
+TABLE_1_DIMENSION_4_LABEL = "Classification"
+
+TABLE_1_MEASURE_1_LABEL = "Donation Amount"  # Example: "Sales", "Revenue", "Score"
+TABLE_1_MEASURE_2_LABEL = "GPA"  # Example: "Cost", "Budget", "Rating"
+TABLE_1_MEASURE_3_LABEL = "Credits"
+TABLE_1_MEASURE_4_LABEL = "Hours"
+
+TABLE_1_DATE_1_LABEL = "Graduation Year"  # Example: "Start Date", "Enrollment Year", "Purchase Date"
+TABLE_1_DATE_2_LABEL = "Last Contact Date"  # Example: "End Date", "Completion Date", "Delivery Date"
+
+# TABLE 2 Configuration - Organization Analysis Tab
+TABLE_2_DIMENSION_1_LABEL = "Industry"  # Example: "Sector", "Business Type", "Field"
+TABLE_2_DIMENSION_2_LABEL = "Company Size"  # Example: "Employee Count Category", "Revenue Range"
+TABLE_2_DIMENSION_3_LABEL = "Location Type"
+TABLE_2_DIMENSION_4_LABEL = "Partnership Level"
+
+TABLE_2_MEASURE_1_LABEL = "Annual Revenue"  # Example: "Contract Value", "Investment Amount"
+TABLE_2_MEASURE_2_LABEL = "Employee Count"  # Example: "Project Count", "Engagement Score"
+TABLE_2_MEASURE_3_LABEL = "Years Active"
+TABLE_2_MEASURE_4_LABEL = "Projects Completed"
+
+TABLE_2_DATE_1_LABEL = "Founded Year"  # Example: "Partnership Start", "First Contact"
+TABLE_2_DATE_2_LABEL = "Last Partnership Date"  # Example: "Contract End", "Last Activity"
+
+# Entity Configuration (for TABLE 2 only)
+ENTITY_TYPE_LABEL = "Organization Type"  # Example: "Company Type", "Institution Category"
+ENTITY_NAME_LABEL = "Organization Name"  # Example: "Company Name", "Institution Name"
+
+# Dashboard Configuration
+DASHBOARD_TITLE = "🗺️ Alumni Geo Analytics Dashboard"
+DASHBOARD_SUBTITLE = "Geographic Analysis of Alumni Data"
+
+# Tab Configuration
+TAB_1_TITLE = "📊 Primary Analysis"
+TAB_2_TITLE = "🏢 Organization Analysis"
+TAB_3_TITLE = "📍 Proximity Analysis"
+
+# Map Configuration
+DEFAULT_POINT_SIZE = 6  # Default point size multiplier
+MIN_POINT_SIZE = 1      # Minimum point size multiplier
+MAX_POINT_SIZE = 20     # Maximum point size multiplier
+
+# =============================================================================
+
+# Page configuration
+st.set_page_config(
+    page_title="Geo Analytics Dashboard",
+    page_icon="🗺️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for better styling
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 3rem;
+        color: #1f4e79;
+        text-align: center;
+        font-weight: bold;
+        margin-bottom: 2rem;
+    }
+    .sub-header {
+        font-size: 1.5rem;
+        color: #2e86ab;
+        font-weight: bold;
+        margin-bottom: 1rem;
+    }
+    .metric-container {
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #1f4e79;
+    }
+    .filter-section {
+        background-color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Get Snowflake session
+@st.cache_resource
+def get_snowflake_session():
+    """Get the active Snowflake session"""
+    return get_active_session()
+
+session = get_snowflake_session()
+
+# Data loading functions
+@st.cache_data(ttl=600)
+def load_map_data_1():
+    """Load map data from table 1 using Snowpark"""
+    df = session.table(DATABASE_TABLE_1).to_pandas()
+    return df
+
+@st.cache_data(ttl=600)
+def load_map_data_2():
+    """Load map data from table 2 using Snowpark"""
+    df = session.table(DATABASE_TABLE_2).to_pandas()
+    return df
+
+def apply_filters(df, zip_codes, dimensions, measure1_range, measure2_range, date1_years, date2_range):
+    """Apply filters to the dataframe"""
+    filtered_df = df.copy()
+    
+    if zip_codes:
+        filtered_df = filtered_df[filtered_df['ZIP_CODE'].isin(zip_codes)]
+    
+    if dimensions:
+        filtered_df = filtered_df[filtered_df['DIMENSION_1'].isin(dimensions)]
+    
+    if measure1_range:
+        filtered_df = filtered_df[
+            (filtered_df['MEASURE_1'] >= measure1_range[0]) & 
+            (filtered_df['MEASURE_1'] <= measure1_range[1])
+        ]
+    
+    if measure2_range:
+        filtered_df = filtered_df[
+            (filtered_df['MEASURE_2'] >= measure2_range[0]) & 
+            (filtered_df['MEASURE_2'] <= measure2_range[1])
+        ]
+    
+    # DATE_1 filter (year selection)
+    if date1_years and 'DATE_1' in filtered_df.columns:
+        # Convert DATE_1 to datetime if it's not already
+        filtered_df['DATE_1'] = pd.to_datetime(filtered_df['DATE_1'], errors='coerce')
+        # Filter by selected years
+        filtered_df = filtered_df[filtered_df['DATE_1'].dt.year.isin(date1_years)]
+    
+    # DATE_2 filter (date range slider)
+    if date2_range and 'DATE_2' in filtered_df.columns:
+        # Convert DATE_2 to datetime if it's not already
+        filtered_df['DATE_2'] = pd.to_datetime(filtered_df['DATE_2'], errors='coerce')
+        # Filter by date range
+        filtered_df = filtered_df[
+            (filtered_df['DATE_2'] >= date2_range[0]) & 
+            (filtered_df['DATE_2'] <= date2_range[1])
+        ]
+    
+    return filtered_df
+
+def apply_filters_with_entities(df, zip_codes, dimensions, measure1_range, measure2_range, date1_years, date2_range, entity_types, entity_names):
+    """Apply filters to the dataframe including entity filters"""
+    # First apply the standard filters
+    filtered_df = apply_filters(df, zip_codes, dimensions, measure1_range, measure2_range, date1_years, date2_range)
+    
+    # Add entity filters
+    if entity_types and 'ENTITY_TYPE' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['ENTITY_TYPE'].isin(entity_types)]
+    
+    if entity_names and 'ENTITY_NAME' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['ENTITY_NAME'].isin(entity_names)]
+    
+    return filtered_df
+
+def calculate_distance(lat1, lon1, lat2, lon2):
+    """
+    Calculate the great circle distance between two points 
+    on the earth (specified in decimal degrees) using the Haversine formula.
+    Returns distance in miles.
+    """
+    # Convert decimal degrees to radians
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    
+    # Radius of earth in miles
+    r = 3959
+    
+    return c * r
+
+def get_records_within_distance(df_source, target_lat, target_lon, max_distance_miles):
+    """
+    Get records from df_source that are within max_distance_miles of the target coordinates.
+    Returns dataframe with additional 'DISTANCE_MILES' column.
+    """
+    # Remove rows with null coordinates
+    valid_df = df_source.dropna(subset=['LATITUDE', 'LONGITUDE']).copy()
+    
+    if valid_df.empty:
+        return pd.DataFrame()
+    
+    # Calculate distance for each record
+    valid_df['DISTANCE_MILES'] = valid_df.apply(
+        lambda row: calculate_distance(target_lat, target_lon, row['LATITUDE'], row['LONGITUDE']), 
+        axis=1
+    )
+    
+    # Filter by distance
+    nearby_df = valid_df[valid_df['DISTANCE_MILES'] <= max_distance_miles].copy()
+    
+    # Sort by distance
+    nearby_df = nearby_df.sort_values('DISTANCE_MILES')
+    
+    return nearby_df
+
+def apply_tab3_filters_table1(df, zip_codes, dimensions1, dimensions2, measure1_range, measure2_range, date1_years, date2_range):
+    """Apply filters to Table 1 data for Tab 3 proximity analysis"""
+    filtered_df = df.copy()
+    
+    # ZIP_CODE filter
+    if zip_codes:
+        filtered_df = filtered_df[filtered_df['ZIP_CODE'].isin(zip_codes)]
+    
+    # DIMENSION_1 filter
+    if dimensions1:
+        filtered_df = filtered_df[filtered_df['DIMENSION_1'].isin(dimensions1)]
+    
+    # DIMENSION_2 filter (if column exists and filter is provided)
+    if dimensions2 and 'DIMENSION_2' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['DIMENSION_2'].isin(dimensions2)]
+    
+    # MEASURE_1 range filter
+    if measure1_range is not None and 'MEASURE_1' in filtered_df.columns:
+        filtered_df = filtered_df[
+            (filtered_df['MEASURE_1'] >= measure1_range[0]) & 
+            (filtered_df['MEASURE_1'] <= measure1_range[1])
+        ]
+    
+    # MEASURE_2 range filter
+    if measure2_range is not None and 'MEASURE_2' in filtered_df.columns:
+        filtered_df = filtered_df[
+            (filtered_df['MEASURE_2'] >= measure2_range[0]) & 
+            (filtered_df['MEASURE_2'] <= measure2_range[1])
+        ]
+    
+    # DATE_1 filter (year selection)
+    if date1_years and 'DATE_1' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['DATE_1'].dt.year.isin(date1_years)]
+    
+    # DATE_2 filter (date range)
+    if date2_range is not None and 'DATE_2' in filtered_df.columns:
+        start_date, end_date = date2_range
+        filtered_df = filtered_df[
+            (filtered_df['DATE_2'] >= start_date) & 
+            (filtered_df['DATE_2'] <= end_date)
+        ]
+    
+    return filtered_df
+
+def apply_tab3_filters_table2(df, zip_codes, dimensions1, dimensions2):
+    """Apply filters to Table 2 data for Tab 3 proximity analysis"""
+    filtered_df = df.copy()
+    
+    # ZIP_CODE filter
+    if zip_codes:
+        filtered_df = filtered_df[filtered_df['ZIP_CODE'].isin(zip_codes)]
+    
+    # DIMENSION_1 filter
+    if dimensions1:
+        filtered_df = filtered_df[filtered_df['DIMENSION_1'].isin(dimensions1)]
+    
+    # DIMENSION_2 filter (if column exists and filter is provided)
+    if dimensions2 and 'DIMENSION_2' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['DIMENSION_2'].isin(dimensions2)]
+    
+    return filtered_df
+
+def create_h3_hexagon_map(df, resolution, table_labels=None):
+    """Create H3 hexagon map using PyDeck H3HexagonLayer"""
+    # Use default Table 1 labels if not provided
+    if table_labels is None:
+        table_labels = {
+            'measure_1': TABLE_1_MEASURE_1_LABEL
+        }
+    
+    h3_column = f'H3_LEVEL_{resolution}'
+    
+    # Check if H3 column exists in dataframe
+    if h3_column not in df.columns:
+        st.error(f"H3 column {h3_column} not found in data")
+        return None
+    
+    # Aggregate data by H3 cell
+    h3_agg = df.groupby(h3_column).agg({
+        'RECORD_ID': 'count',
+        'MEASURE_1': ['sum', 'mean'],
+        'LATITUDE': 'mean',
+        'LONGITUDE': 'mean'
+    }).round(2)
+    
+    h3_agg.columns = ['record_count', 'measure1_sum', 'measure1_avg', 'center_lat', 'center_lon']
+    h3_agg = h3_agg.reset_index()
+    
+    # Check if we have valid aggregated data
+    if h3_agg.empty:
+        st.error("❌ No H3 aggregated data available")
+        return None
+    
+    st.success(f"✅ Creating H3 hexagons for {len(h3_agg)} spatial clusters!")
+    
+    # Calculate map center
+    avg_latitude = h3_agg['center_lat'].mean()
+    avg_longitude = h3_agg['center_lon'].mean()
+    
+    # Define color function based on measure1_sum
+    def get_color_for_measure(measure_value, max_measure):
+        # Normalize to 0-1 range
+        normalized = min(1.0, max(0.0, measure_value / max_measure)) if max_measure > 0 else 0
+        
+        # Color scale from light orange to dark red (following your working example)
+        red = int(255 * (0.8 + 0.2 * normalized))  # 204-255
+        green = int(255 * (0.6 * (1 - normalized)))  # 153 down to 0
+        blue = int(255 * (0.2 * (1 - normalized)))   # 51 down to 0
+        
+        return [red, green, blue]
+    
+    # Apply color function
+    max_measure = h3_agg['measure1_sum'].max() if not h3_agg.empty else 1
+    h3_agg['color'] = h3_agg['measure1_sum'].apply(lambda x: get_color_for_measure(x, max_measure))
+    
+    # Format values for tooltip display
+    h3_agg['measure1_sum_formatted'] = h3_agg['measure1_sum'].apply(lambda x: f"{x:,.2f}")
+    h3_agg['measure1_avg_formatted'] = h3_agg['measure1_avg'].apply(lambda x: f"{x:,.2f}")
+    h3_agg['record_count_formatted'] = h3_agg['record_count'].apply(lambda x: f"{x:,}")
+    
+    # Define tooltip for aggregated data
+    tooltip = {
+        "html": 
+            "<b>H3 Cell:</b> {" + h3_column + "}<br/>"
+            "<b>Records:</b> {record_count_formatted}<br/>"
+            f"<b>Sum {table_labels['measure_1']}:</b> {{measure1_sum_formatted}}<br/>"
+            f"<b>Avg {table_labels['measure_1']}:</b> {{measure1_avg_formatted}}<br/>",
+        "style": {
+            "backgroundColor": 'rgba(255, 87, 0, 0.9)',
+            "color": "white",
+            "fontSize": "14px",
+            "padding": "10px",
+            "borderRadius": "5px"
+        }
+    }
+    
+    # Create PyDeck H3 layer
+    h3_layer = pdk.Layer(
+        "H3HexagonLayer",
+        h3_agg,
+        pickable=True,
+        stroked=True,
+        filled=True,
+        extruded=False,
+        opacity=0.7,
+        get_hexagon=h3_column,  # Use the H3 index column
+        get_fill_color="color",  # Use the dynamically calculated color
+        get_line_color=[255, 255, 255],  # White borders
+        line_width_min_pixels=1,
+    )
+    
+    # Create the deck
+    deck = pdk.Deck(
+        layers=[h3_layer],
+        tooltip=tooltip,
+        initial_view_state=pdk.ViewState(
+            latitude=avg_latitude,
+            longitude=avg_longitude,
+            zoom=10,
+            pitch=0
+        ),
+        map_style=None  # white-bg style uses None
+    )
+    
+    return deck
+
+def create_points_map(df, point_size_multiplier=DEFAULT_POINT_SIZE, table_labels=None):
+    """Create points map using PyDeck ScatterplotLayer"""
+    # Use default Table 1 labels if not provided
+    if table_labels is None:
+        table_labels = {
+            'dimension_1': TABLE_1_DIMENSION_1_LABEL,
+            'measure_1': TABLE_1_MEASURE_1_LABEL
+        }
+    
+    # Remove rows with null coordinates
+    valid_df = df.dropna(subset=['LATITUDE', 'LONGITUDE']).copy()
+    if valid_df.empty:
+        st.error("❌ No valid coordinates available")
+        return None
+    
+    st.info(f"📍 Showing {len(valid_df)} individual record locations")
+    
+    # Convert to rich dictionary format for PyDeck
+    data = []
+    for _, row in valid_df.iterrows():
+        # Color based on MEASURE_1 value (blue scale)
+        measure1_val = row.get('MEASURE_1', 0)
+        max_measure1 = valid_df['MEASURE_1'].max() if not valid_df['MEASURE_1'].isna().all() else 1
+        
+        # Normalize measure1 value for color
+        normalized = min(1.0, max(0.0, measure1_val / max_measure1)) if max_measure1 > 0 else 0
+        
+        # Blue color scale
+        red = int(255 * (0.2 + 0.3 * (1 - normalized)))  # Light to dark
+        green = int(255 * (0.4 + 0.4 * (1 - normalized)))
+        blue = int(255 * (0.8 + 0.2 * normalized))  # More blue for higher values
+        color = [red, green, blue, 160]
+        
+        # Size based on MEASURE_1 value
+        radius = max(100, min(500, measure1_val * 10)) if measure1_val > 0 else 100
+        
+        data.append({
+            'lat': float(row['LATITUDE']),
+            'lon': float(row['LONGITUDE']),
+            'record_name': str(row.get('RECORD_NAME', 'Unknown')),
+            'dimension_1': str(row.get('DIMENSION_1', 'Unknown')),
+            'measure_1': f"{measure1_val:,.2f}" if pd.notna(measure1_val) else "N/A",
+            'color': color,
+            'radius': radius
+        })
+    
+    # Use PyDeck ScatterplotLayer
+    scatter_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=data,
+        pickable=True,
+        opacity=0.8,
+        stroked=True,
+        filled=True,
+        radius_scale=point_size_multiplier,
+        radius_min_pixels=3,
+        radius_max_pixels=100,
+        line_width_min_pixels=1,
+        get_position=['lon', 'lat'],
+        get_radius='radius',
+        get_fill_color='color',
+        get_line_color=[0, 0, 0],
+    )
+    
+    # Calculate center
+    center_lat = valid_df['LATITUDE'].mean()
+    center_lon = valid_df['LONGITUDE'].mean()
+    
+    # Add tooltips for individual records
+    tooltip = {
+        "html": 
+            "<b>Record Name:</b> {record_name}<br/>"
+            f"<b>{table_labels['dimension_1']}:</b> {{dimension_1}}<br/>"
+            f"<b>{table_labels['measure_1']}:</b> {{measure_1}}<br/>",
+        "style": {
+            "backgroundColor": 'rgba(31, 78, 121, 0.9)',
+            "color": "white",
+            "fontSize": "14px",
+            "padding": "10px",
+            "borderRadius": "5px"
+        }
+    }
+    
+    # Create PyDeck deck
+    deck = pdk.Deck(
+        layers=[scatter_layer],
+        tooltip=tooltip,
+        initial_view_state=pdk.ViewState(
+            latitude=center_lat,
+            longitude=center_lon,
+            zoom=9,
+            pitch=0
+        ),
+        map_style=None  # White background
+    )
+    
+    return deck
+
+def create_proximity_map(selected_record, nearby_records, distance_miles):
+    """Create a map showing the selected record and nearby records within distance"""
+    
+    if selected_record is None or nearby_records.empty:
+        st.error("❌ No data available for proximity map")
+        return None
+    
+    # Prepare selected record data (red marker)
+    selected_data = pd.DataFrame([{
+        'lat': selected_record['LATITUDE'],
+        'lon': selected_record['LONGITUDE'],
+        'record_name': selected_record.get('RECORD_NAME', 'Selected Record'),
+        'entity_name': selected_record.get('ENTITY_NAME', 'N/A'),
+        'entity_type': selected_record.get('ENTITY_TYPE', 'N/A'),
+        'color': [255, 0, 0, 200],  # Red for selected record
+        'radius': 100
+    }])
+    
+    # Prepare nearby records data (blue markers)
+    nearby_data = nearby_records[['LATITUDE', 'LONGITUDE', 'RECORD_NAME', 'DISTANCE_MILES']].copy()
+    nearby_data.columns = ['lat', 'lon', 'record_name', 'distance']
+    nearby_data['color'] = nearby_data.apply(lambda x: [0, 100, 255, 160], axis=1)  # Blue for nearby records
+    nearby_data['radius'] = 50
+    
+    # Create layers
+    selected_layer = pdk.Layer(
+        "ScatterplotLayer",
+        selected_data,
+        get_position=['lon', 'lat'],
+        get_radius='radius',
+        get_fill_color='color',
+        get_line_color=[255, 255, 255],
+        line_width_min_pixels=2,
+        pickable=True
+    )
+    
+    nearby_layer = pdk.Layer(
+        "ScatterplotLayer", 
+        nearby_data,
+        get_position=['lon', 'lat'],
+        get_radius='radius',
+        get_fill_color='color',
+        get_line_color=[255, 255, 255],
+        line_width_min_pixels=1,
+        pickable=True
+    )
+    
+    # Calculate center and zoom
+    all_lats = [selected_record['LATITUDE']] + nearby_records['LATITUDE'].tolist()
+    all_lons = [selected_record['LONGITUDE']] + nearby_records['LONGITUDE'].tolist()
+    
+    center_lat = np.mean(all_lats)
+    center_lon = np.mean(all_lons)
+    
+    # Calculate zoom level based on distance (adjusted for smaller range)
+    if distance_miles <= 0.5:
+        zoom = 15
+    elif distance_miles <= 1.0:
+        zoom = 14
+    elif distance_miles <= 2.5:
+        zoom = 13
+    elif distance_miles <= 5.0:
+        zoom = 12
+    else:
+        zoom = 11
+    
+    # Tooltips
+    selected_tooltip = {
+        "html": 
+            "<b>🎯 SELECTED RECORD</b><br/>"
+            "<b>Name:</b> {record_name}<br/>"
+            "<b>Entity:</b> {entity_name}<br/>"
+            "<b>Type:</b> {entity_type}",
+        "style": {
+            "backgroundColor": 'rgba(255, 0, 0, 0.9)',
+            "color": "white",
+            "fontSize": "14px",
+            "padding": "10px",
+            "borderRadius": "5px"
+        }
+    }
+    
+    nearby_tooltip = {
+        "html": 
+            "<b>📍 NEARBY RECORD</b><br/>"
+            "<b>Name:</b> {record_name}<br/>"
+            "<b>Distance:</b> {distance:.2f} miles",
+        "style": {
+            "backgroundColor": 'rgba(0, 100, 255, 0.9)',
+            "color": "white", 
+            "fontSize": "14px",
+            "padding": "10px",
+            "borderRadius": "5px"
+        }
+    }
+    
+    # Create deck
+    deck = pdk.Deck(
+        layers=[nearby_layer, selected_layer],  # Selected layer on top
+        initial_view_state=pdk.ViewState(
+            latitude=center_lat,
+            longitude=center_lon,
+            zoom=zoom,
+            pitch=0,
+        ),
+        tooltip=nearby_tooltip,  # Default tooltip for nearby records
+        map_style=None
+    )
+    
+    st.info(f"🎯 **Selected Record:** {selected_record.get('RECORD_NAME', 'Unknown')} | 📍 **Nearby Records:** {len(nearby_records)} within {distance_miles} miles")
+    
+    return deck
+
+def clean_data(df):
+    """Clean and prepare data for analysis"""
+    # Clean data - handle null values in key columns
+    df['ZIP_CODE'] = df['ZIP_CODE'].fillna('Unknown')
+    df['DIMENSION_1'] = df['DIMENSION_1'].fillna('Unknown')
+    
+    # Convert date columns to datetime for filtering
+    if 'DATE_1' in df.columns:
+        df['DATE_1'] = pd.to_datetime(df['DATE_1'], errors='coerce')
+    if 'DATE_2' in df.columns:
+        df['DATE_2'] = pd.to_datetime(df['DATE_2'], errors='coerce')
+    
+    # Clean entity columns if they exist
+    if 'ENTITY_TYPE' in df.columns:
+        df['ENTITY_TYPE'] = df['ENTITY_TYPE'].fillna('Unknown')
+    if 'ENTITY_NAME' in df.columns:
+        df['ENTITY_NAME'] = df['ENTITY_NAME'].fillna('Unknown')
+    
+    return df
+
+def create_sidebar_filters(df, tab_key="", filter_title="Filters", table_labels=None):
+    """Create sidebar filters and return filter values"""
+    # Use table-specific labels if provided, otherwise use default Table 1 labels
+    if table_labels is None:
+        table_labels = {
+            'dimension_1': TABLE_1_DIMENSION_1_LABEL,
+            'measure_1': TABLE_1_MEASURE_1_LABEL,
+            'measure_2': TABLE_1_MEASURE_2_LABEL,
+            'date_1': TABLE_1_DATE_1_LABEL,
+            'date_2': TABLE_1_DATE_2_LABEL
+        }
+    
+    # Sidebar filters
+    st.sidebar.markdown('<div class="filter-section">', unsafe_allow_html=True)
+    st.sidebar.markdown(f'<h3 class="sub-header">🎛️ {filter_title}</h3>', unsafe_allow_html=True)
+    
+    # Get all available options (filter out null values)
+    all_zip_codes = sorted([z for z in df['ZIP_CODE'].unique() if z is not None and pd.notna(z) and z != 'Unknown'])
+    all_dimensions = sorted([d for d in df['DIMENSION_1'].unique() if d is not None and pd.notna(d) and d != 'Unknown'])
+    
+    # ZIP_CODE multiselect with select/deselect all
+    st.sidebar.markdown("**Zip Code**")
+    col_zip1, col_zip2 = st.sidebar.columns(2)
+    with col_zip1:
+        if st.button("Select All", key=f"select_all_zips_{tab_key}"):
+            st.session_state[f'selected_zips_{tab_key}'] = all_zip_codes
+    with col_zip2:
+        if st.button("Deselect All", key=f"deselect_all_zips_{tab_key}"):
+            st.session_state[f'selected_zips_{tab_key}'] = []
+    
+    # Initialize session state for zip codes
+    if f'selected_zips_{tab_key}' not in st.session_state:
+        st.session_state[f'selected_zips_{tab_key}'] = all_zip_codes[:10] if len(all_zip_codes) >= 10 else all_zip_codes
+    
+    zip_codes = st.sidebar.multiselect(
+        "Select Zip Codes",
+        options=all_zip_codes,
+        default=st.session_state[f'selected_zips_{tab_key}'],
+        key=f"zip_multiselect_{tab_key}"
+    )
+    
+    # DIMENSION_1 multiselect with select/deselect all
+    st.sidebar.markdown(f"**{table_labels['dimension_1']}**")
+    col_dim1, col_dim2 = st.sidebar.columns(2)
+    with col_dim1:
+        if st.button("Select All", key=f"select_all_dims_{tab_key}"):
+            st.session_state[f'selected_dims_{tab_key}'] = all_dimensions
+    with col_dim2:
+        if st.button("Deselect All", key=f"deselect_all_dims_{tab_key}"):
+            st.session_state[f'selected_dims_{tab_key}'] = []
+    
+    # Initialize session state for dimensions
+    if f'selected_dims_{tab_key}' not in st.session_state:
+        st.session_state[f'selected_dims_{tab_key}'] = all_dimensions[:5] if len(all_dimensions) >= 5 else all_dimensions
+    
+    dimensions = st.sidebar.multiselect(
+        f"Select {table_labels['dimension_1']}",
+        options=all_dimensions,
+        default=st.session_state[f'selected_dims_{tab_key}'],
+        key=f"dim_multiselect_{tab_key}"
+    )
+    
+    # MEASURE_1 slider
+    min_measure1 = float(df['MEASURE_1'].min())
+    max_measure1 = float(df['MEASURE_1'].max())
+    measure1_range = st.sidebar.slider(
+        f"{table_labels['measure_1']} Range",
+        min_value=min_measure1,
+        max_value=max_measure1,
+        value=(min_measure1, max_measure1),
+        format="%.2f",
+        key=f"measure1_slider_{tab_key}"
+    )
+    
+    # MEASURE_2 slider
+    min_measure2 = float(df['MEASURE_2'].min())
+    max_measure2 = float(df['MEASURE_2'].max())
+    measure2_range = st.sidebar.slider(
+        f"{table_labels['measure_2']} Range",
+        min_value=min_measure2,
+        max_value=max_measure2,
+        value=(min_measure2, max_measure2),
+        format="%.2f",
+        key=f"measure2_slider_{tab_key}"
+    )
+    
+    # DATE_1 filter (year selection)
+    date1_years = []
+    if 'DATE_1' in df.columns and not df['DATE_1'].isna().all():
+        available_years = sorted([year for year in df['DATE_1'].dt.year.dropna().unique() if pd.notna(year)])
+        if available_years:
+            st.sidebar.markdown(f"**{table_labels['date_1']}**")
+            date1_years = st.sidebar.multiselect(
+                f"Select {table_labels['date_1']}",
+                options=available_years,
+                default=available_years,
+                key=f"date1_multiselect_{tab_key}"
+            )
+    
+    # DATE_2 filter (date range selector)
+    date2_range = None
+    if 'DATE_2' in df.columns and not df['DATE_2'].isna().all():
+        min_date2 = df['DATE_2'].min()
+        max_date2 = df['DATE_2'].max()
+        if pd.notna(min_date2) and pd.notna(max_date2):
+            st.sidebar.markdown(f"**{table_labels['date_2']}**")
+            
+            # Check if all dates are the same (min equals max)
+            if min_date2.date() == max_date2.date():
+                # All dates are the same, show info instead of selector
+                st.sidebar.info(f"All records: {min_date2.strftime('%Y-%m-%d')}")
+                date2_range = (min_date2, max_date2)  # Include all records
+            else:
+                # Create a list of unique dates for the select_slider
+                unique_dates = sorted(df['DATE_2'].dropna().dt.date.unique())
+                
+                # Use select_slider with actual dates
+                date2_slider_range = st.sidebar.select_slider(
+                    f"{table_labels['date_2']} Range",
+                    options=unique_dates,
+                    value=(unique_dates[0], unique_dates[-1]),
+                    format_func=lambda x: x.strftime('%Y-%m-%d'),
+                    key=f"date2_select_slider_{tab_key}"
+                )
+                
+                # Convert back to datetime for filtering
+                start_date = pd.to_datetime(date2_slider_range[0])
+                end_date = pd.to_datetime(date2_slider_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)  # End of day
+                date2_range = (start_date, end_date)
+    
+    st.sidebar.markdown('</div>', unsafe_allow_html=True)
+    
+    return zip_codes, dimensions, measure1_range, measure2_range, date1_years, date2_range
+
+def main():
+    # Header
+    st.markdown(f'<h1 class="main-header">{DASHBOARD_TITLE}</h1>', 
+                unsafe_allow_html=True)
+    st.markdown(f'<h2 class="sub-header">{DASHBOARD_SUBTITLE}</h2>', 
+                unsafe_allow_html=True)
+    
+    # Create tabs
+    tab1, tab2, tab3 = st.tabs([TAB_1_TITLE, TAB_2_TITLE, TAB_3_TITLE])
+    
+    with tab1:
+        # Load data for tab 1
+        with st.spinner("Loading data from Snowflake..."):
+            try:
+                df = load_map_data_1()
+                
+                if df.empty:
+                    st.error("No data found. Please ensure the MAP_TABLE_1 table is populated.")
+                    st.stop()
+                
+                df = clean_data(df)
+                
+            except Exception as e:
+                st.error(f"Error loading data: {str(e)}")
+                st.info("Please ensure the database table has been created and populated.")
+                st.stop()
+        
+        # Create sidebar filters
+        # Create Table 1 labels dictionary
+        table1_labels = {
+            'dimension_1': TABLE_1_DIMENSION_1_LABEL,
+            'measure_1': TABLE_1_MEASURE_1_LABEL,
+            'measure_2': TABLE_1_MEASURE_2_LABEL,
+            'date_1': TABLE_1_DATE_1_LABEL,
+            'date_2': TABLE_1_DATE_2_LABEL
+        }
+        zip_codes, dimensions, measure1_range, measure2_range, date1_years, date2_range = create_sidebar_filters(df, "tab1", "Filters Primary", table1_labels)
+        
+        # Apply filters
+        filtered_df = apply_filters(df, zip_codes, dimensions, measure1_range, measure2_range, date1_years, date2_range)
+        
+        # Summary metrics at the top
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            record_count = len(filtered_df)
+            st.metric(
+                label="📊 Number of Records",
+                value=f"{record_count:,}",
+                delta=f"{record_count - len(df):,} filtered"
+            )
+        
+        with col2:
+            sum_measure1 = filtered_df['MEASURE_1'].sum()
+            st.metric(
+                label=f"📈 Sum of {table1_labels['measure_1']}",
+                value=f"{sum_measure1:,.2f}"
+            )
+        
+        with col3:
+            avg_measure1 = filtered_df['MEASURE_1'].mean()
+            st.metric(
+                label=f"📊 Avg of {table1_labels['measure_1']}",
+                value=f"{avg_measure1:,.2f}"
+            )
+        
+        with col4:
+            distinct_dimension1 = filtered_df['DIMENSION_1'].nunique()
+            st.metric(
+                label=f"🔢 Distinct {table1_labels['dimension_1']}",
+                value=f"{distinct_dimension1:,}"
+            )
+        
+        st.markdown("---")
+        
+        # Map controls
+        col1, col2, col3 = st.columns([2, 2, 2])
+        
+        with col1:
+            # Radio button toggle between map types
+            map_type = st.radio(
+                "Map Type",
+                ["H3 Hexagonal Grid", "Individual Points"],
+                key="tab1_map_type"
+            )
+        
+        with col2:
+            h3_resolution = 8
+            if map_type == "H3 Hexagonal Grid":
+                h3_resolution = st.slider(
+                    "H3 Resolution",
+                    min_value=7,
+                    max_value=9,
+                    value=8,
+                    key="tab1_h3_resolution"
+                )
+        
+        with col3:
+            point_size = DEFAULT_POINT_SIZE
+            if map_type == "Individual Points":
+                point_size = st.slider(
+                    "Point Size",
+                    min_value=MIN_POINT_SIZE,
+                    max_value=MAX_POINT_SIZE,
+                    value=DEFAULT_POINT_SIZE,
+                    key="tab1_point_size",
+                    help="Adjust the size of individual points on the map"
+                )
+        
+        # Display map
+        if not filtered_df.empty:
+            if map_type == "H3 Hexagonal Grid":
+                result = create_h3_hexagon_map(filtered_df, h3_resolution, table1_labels)
+            else:
+                result = create_points_map(filtered_df, point_size, table1_labels)
+            
+            if result is not None:
+                st.pydeck_chart(result)
+            else:
+                st.error("❌ Unable to create map")
+            
+            # Data table section
+            st.markdown("---")
+            st.markdown("### 📋 Data Table")
+            
+            if not filtered_df.empty:
+                # Display options
+                col_table1, col_table2 = st.columns([1, 3])
+                with col_table1:
+                    show_records = st.selectbox(
+                        "Records to display:",
+                        [25, 50, 100, "All"],
+                        index=0,
+                        key="tab1_show_records"
+                    )
+                
+                # Apply display limit
+                if show_records == "All":
+                    display_df = filtered_df
+                else:
+                    display_df = filtered_df.head(show_records)
+                
+                # Select key columns for display
+                display_columns = [
+                    'RECORD_ID', 'RECORD_NAME', 'ZIP_CODE', 'DIMENSION_1', 
+                    'MEASURE_1', 'MEASURE_2', 'DATE_1', 'DATE_2', 'CITY', 'STATE'
+                ]
+                
+                available_columns = [col for col in display_columns if col in filtered_df.columns]
+                table_df = display_df[available_columns].copy()
+                
+                st.dataframe(
+                    table_df,
+                    use_container_width=True,
+                    height=400,
+                    column_config={
+                        "RECORD_ID": "Record ID",
+                        "RECORD_NAME": "Record Name",
+                        "ZIP_CODE": "Zip Code",
+                        "DIMENSION_1": table1_labels['dimension_1'],
+                        "MEASURE_1": table1_labels['measure_1'],
+                        "MEASURE_2": table1_labels['measure_2'],
+                        "DATE_1": table1_labels['date_1'],
+                        "DATE_2": table1_labels['date_2'],
+                        "CITY": "City",
+                        "STATE": "State"
+                    }
+                )
+                
+                # Download data
+                col_download1, col_download2 = st.columns(2)
+                with col_download1:
+                    csv_data = filtered_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Data",
+                        data=csv_data,
+                        file_name=f"geo_data_{len(filtered_df)}_records.csv",
+                        mime="text/csv",
+                        help="Download filtered dataset"
+                    )
+                
+                if show_records != "All" and len(filtered_df) > show_records:
+                    st.info(f"Showing first {show_records} of {len(filtered_df)} records. Use download button to get complete data.")
+        else:
+            st.warning("No data matches current filters.")
+    
+    with tab2:
+        st.header("🏢 Organization Analysis")
+        
+        # Load data from MAP_TABLE_2 only
+        with st.spinner("Loading data from Snowflake..."):
+            try:
+                df2 = load_map_data_2()
+                if df2.empty:
+                    st.error("No data found. Please ensure the MAP_TABLE_2 table is populated.")
+                    return
+                
+                df2 = clean_data(df2)
+                
+            except Exception as e:
+                st.error(f"Error loading data: {str(e)}")
+                st.info("Please ensure the MAP_TABLE_2 database table has been created and populated.")
+                return
+        
+        # Create sidebar filters for MAP_TABLE_2
+        # Create Table 2 labels dictionary
+        table2_labels = {
+            'dimension_1': TABLE_2_DIMENSION_1_LABEL,
+            'measure_1': TABLE_2_MEASURE_1_LABEL,
+            'measure_2': TABLE_2_MEASURE_2_LABEL,
+            'date_1': TABLE_2_DATE_1_LABEL,
+            'date_2': TABLE_2_DATE_2_LABEL
+        }
+        zip_codes2, dimensions2, measure1_range2, measure2_range2, date1_years2, date2_range2 = create_sidebar_filters(df2, "tab2", "Filters Organization", table2_labels)
+        
+        # Entity filters on main page (not sidebar)
+        st.markdown("### 🏢 Organization Filters")
+        col_entity1, col_entity2 = st.columns(2)
+        
+        with col_entity1:
+            # Entity Type filter
+            entity_types = []
+            if 'ENTITY_TYPE' in df2.columns:
+                all_entity_types = sorted([e for e in df2['ENTITY_TYPE'].unique() if e is not None and pd.notna(e) and e != 'Unknown'])
+                entity_types = st.multiselect(
+                    f"Select {ENTITY_TYPE_LABEL}",
+                    options=all_entity_types,
+                    default=all_entity_types,
+                    key="tab2_entity_types"
+                )
+        
+        with col_entity2:
+            # Entity Name filter
+            entity_names = []
+            if 'ENTITY_NAME' in df2.columns:
+                all_entity_names = sorted([e for e in df2['ENTITY_NAME'].unique() if e is not None and pd.notna(e) and e != 'Unknown'])
+                entity_names = st.multiselect(
+                    f"Select {ENTITY_NAME_LABEL}",
+                    options=all_entity_names,
+                    default=all_entity_names[:10] if len(all_entity_names) >= 10 else all_entity_names,
+                    key="tab2_entity_names"
+                )
+        
+        
+        # Apply sidebar filters to MAP_TABLE_2
+        filtered_df2_base = apply_filters(df2, zip_codes2, dimensions2, measure1_range2, measure2_range2, date1_years2, date2_range2)
+        
+        # Apply entity filters only for the map (entity filters are applied on top of the already filtered data)
+        if entity_types and 'ENTITY_TYPE' in filtered_df2_base.columns:
+            filtered_df2_map = filtered_df2_base[filtered_df2_base['ENTITY_TYPE'].isin(entity_types)].copy()
+        else:
+            filtered_df2_map = filtered_df2_base.copy()
+            
+        if entity_names and 'ENTITY_NAME' in filtered_df2_map.columns:
+            filtered_df2_map = filtered_df2_map[filtered_df2_map['ENTITY_NAME'].isin(entity_names)]
+        
+        # Summary metrics at the top (using map data with entity filters)
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            record_count2 = len(filtered_df2_map)
+            st.metric(
+                label="📊 Number of Records (Map)",
+                value=f"{record_count2:,}",
+                delta=f"{record_count2 - len(df2):,} filtered"
+            )
+        
+        with col2:
+            sum_measure1_2 = filtered_df2_map['MEASURE_1'].sum()
+            st.metric(
+                label=f"📈 Sum of {table2_labels['measure_1']}",
+                value=f"{sum_measure1_2:,.2f}"
+            )
+        
+        with col3:
+            avg_measure1_2 = filtered_df2_map['MEASURE_1'].mean()
+            st.metric(
+                label=f"📊 Avg of {table2_labels['measure_1']}",
+                value=f"{avg_measure1_2:,.2f}"
+            )
+        
+        with col4:
+            distinct_dimension1_2 = filtered_df2_map['DIMENSION_1'].nunique()
+            st.metric(
+                label=f"🔢 Distinct {table2_labels['dimension_1']}",
+                value=f"{distinct_dimension1_2:,}"
+            )
+        
+        st.markdown("---")
+        
+        # Map controls
+        col1, col2, col3 = st.columns([2, 2, 2])
+        
+        with col1:
+            # Radio button toggle between map types
+            map_type2 = st.radio(
+                "Map Type",
+                ["H3 Hexagonal Grid", "Individual Points"],
+                key="tab2_map_type"
+            )
+        
+        with col2:
+            h3_resolution2 = 8
+            if map_type2 == "H3 Hexagonal Grid":
+                h3_resolution2 = st.slider(
+                    "H3 Resolution",
+                    min_value=7,
+                    max_value=9,
+                    value=8,
+                    key="tab2_h3_resolution"
+                )
+        
+        with col3:
+            point_size2 = DEFAULT_POINT_SIZE
+            if map_type2 == "Individual Points":
+                point_size2 = st.slider(
+                    "Point Size",
+                    min_value=MIN_POINT_SIZE,
+                    max_value=MAX_POINT_SIZE,
+                    value=DEFAULT_POINT_SIZE,
+                    key="tab2_point_size",
+                    help="Adjust the size of individual points on the map"
+                )
+        
+        # Display map (using entity-filtered data)
+        if not filtered_df2_map.empty:
+            if map_type2 == "H3 Hexagonal Grid":
+                result2 = create_h3_hexagon_map(filtered_df2_map, h3_resolution2, table2_labels)
+            else:
+                result2 = create_points_map(filtered_df2_map, point_size2, table2_labels)
+            
+            if result2 is not None:
+                st.pydeck_chart(result2)
+            else:
+                st.error("❌ Unable to create map")
+            
+            # Data table section
+            st.markdown("---")
+            st.markdown("### 📋 Organization Data Table")
+            
+            # Show MAP_TABLE_2 data after sidebar filters (before Organization filters)
+            table_data = filtered_df2_base
+            st.info("📊 **Note:** This table shows MAP_TABLE_2 data after sidebar filters (before Organization filters). The map shows the same data after Organization filters.")
+            
+            if not table_data.empty:
+                # Display options
+                col_table1, col_table2 = st.columns([1, 3])
+                with col_table1:
+                    show_records2 = st.selectbox(
+                        "Records to display:",
+                        [25, 50, 100, "All"],
+                        index=0,
+                        key="tab2_show_records"
+                    )
+                
+                # Apply display limit
+                if show_records2 == "All":
+                    display_df2 = table_data
+                else:
+                    display_df2 = table_data.head(show_records2)
+                
+                # Select key columns for display including entity fields
+                display_columns2 = [
+                    'RECORD_ID', 'RECORD_NAME', 'ZIP_CODE', 'DIMENSION_1', 
+                    'MEASURE_1', 'MEASURE_2', 'DATE_1', 'DATE_2', 
+                    'ENTITY_TYPE', 'ENTITY_NAME', 'CITY', 'STATE'
+                ]
+                
+                # Remove DATA_SOURCE from display since we only use MAP_TABLE_2
+                
+                available_columns2 = [col for col in display_columns2 if col in table_data.columns]
+                table_df2 = display_df2[available_columns2].copy()
+                
+                st.dataframe(
+                    table_df2,
+                    use_container_width=True,
+                    height=400,
+                    column_config={
+                        "RECORD_ID": "Record ID",
+                        "RECORD_NAME": "Record Name",
+                        "DATA_SOURCE": "Data Source",
+                        "ZIP_CODE": "Zip Code",
+                        "DIMENSION_1": table2_labels['dimension_1'],
+                        "MEASURE_1": table2_labels['measure_1'],
+                        "MEASURE_2": table2_labels['measure_2'],
+                        "DATE_1": table2_labels['date_1'],
+                        "DATE_2": table2_labels['date_2'],
+                        "ENTITY_TYPE": ENTITY_TYPE_LABEL,
+                        "ENTITY_NAME": ENTITY_NAME_LABEL,
+                        "CITY": "City",
+                        "STATE": "State"
+                    }
+                )
+                
+                # Download data
+                col_download1, col_download2 = st.columns(2)
+                with col_download1:
+                    csv_data2 = table_data.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="📥 Download Data",
+                        data=csv_data2,
+                        file_name=f"organization_data_{len(table_data)}_records.csv",
+                        mime="text/csv",
+                        help="Download organization dataset"
+                    )
+                
+                if show_records2 != "All" and len(table_data) > show_records2:
+                    st.info(f"Showing first {show_records2} of {len(table_data)} records. Use download button to get complete data.")
+        else:
+            st.warning("No organization data matches current filters.")
+            
+        # Add additional info about data filtering
+        if not filtered_df2_base.empty and not filtered_df2_map.empty:
+            base_count = len(filtered_df2_base)
+            map_count = len(filtered_df2_map)
+            if base_count != map_count:
+                st.info(f"📊 **Data Summary:** Table shows {base_count:,} records (all data) • Map shows {map_count:,} records (after Organization filters)")
+
+    with tab3:
+        st.header("📍 Proximity Analysis")
+        st.markdown("Select one record from Table 2, then find Table 1 records within a specified distance.")
+        
+        # Load data for Tab 3
+        with st.spinner("Loading data from Snowflake..."):
+            try:
+                df_table1 = load_map_data_1()  # Source records (Table 1)
+                df_table2 = load_map_data_2()  # Target records (Table 2)
+                
+                df_table1 = clean_data(df_table1)
+                df_table2 = clean_data(df_table2)
+                
+                if df_table1.empty:
+                    st.error("No data found in MAP_TABLE_1. Please ensure the table is populated.")
+                    return
+                if df_table2.empty:
+                    st.error("No data found in MAP_TABLE_2. Please ensure the table is populated.")
+                    return
+                    
+            except Exception as e:
+                st.error(f"Error loading data: {str(e)}")
+                st.info("Please ensure both database tables have been created and populated.")
+                return
+        
+        # Filters for selecting one record from Table 2
+        st.markdown("### 🎯 Select Target Record (from Organization Data)")
+        
+        col_filter1, col_filter2, col_filter3 = st.columns(3)
+        
+        with col_filter1:
+            # Entity Type filter
+            available_entity_types = sorted([t for t in df_table2['ENTITY_TYPE'].unique() 
+                                           if t is not None and pd.notna(t) and t != 'Unknown'])
+            selected_entity_type = st.selectbox(
+                f"Select {ENTITY_TYPE_LABEL}",
+                options=['All'] + available_entity_types,
+                index=0,
+                key="tab3_entity_type"
+            )
+        
+        with col_filter2:
+            # Filter Entity Names based on Entity Type
+            if selected_entity_type != 'All':
+                filtered_table2 = df_table2[df_table2['ENTITY_TYPE'] == selected_entity_type]
+            else:
+                filtered_table2 = df_table2
+                
+            available_entity_names = sorted([n for n in filtered_table2['ENTITY_NAME'].unique() 
+                                           if n is not None and pd.notna(n) and n != 'Unknown'])
+            selected_entity_name = st.selectbox(
+                f"Select {ENTITY_NAME_LABEL}",
+                options=['All'] + available_entity_names,
+                index=0,
+                key="tab3_entity_name"
+            )
+        
+        with col_filter3:
+            # Filter Record Names based on previous selections
+            if selected_entity_name != 'All':
+                filtered_table2 = filtered_table2[filtered_table2['ENTITY_NAME'] == selected_entity_name]
+            
+            available_record_names = sorted([r for r in filtered_table2['RECORD_NAME'].unique() 
+                                           if r is not None and pd.notna(r) and r != 'Unknown'])
+            selected_record_name = st.selectbox(
+                "Select Record Name",
+                options=['Select a record...'] + available_record_names,
+                index=0,
+                key="tab3_record_name"
+            )
+        
+        # Additional filters for Table 1
+        st.markdown("### 🔍 Table 1 Filters (Primary Analysis)")
+        
+        # Create columns for better layout of remaining filters
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # Table 1 DIMENSION_1 filter
+            available_dimensions1_t1 = sorted([d for d in df_table1['DIMENSION_1'].unique() 
+                                             if d is not None and pd.notna(d) and d != 'Unknown'])
+            selected_dimensions1_t1 = st.multiselect(
+                f"{TABLE_1_DIMENSION_1_LABEL}",
+                options=available_dimensions1_t1,
+                default=available_dimensions1_t1[:5] if len(available_dimensions1_t1) >= 5 else available_dimensions1_t1,
+                key="tab3_dimensions1_t1"
+            )
+            
+            # Table 1 MEASURE_1 range filter
+            if 'MEASURE_1' in df_table1.columns:
+                min_measure1_t1 = float(df_table1['MEASURE_1'].min())
+                max_measure1_t1 = float(df_table1['MEASURE_1'].max())
+                measure1_range_t1 = st.slider(
+                    f"{TABLE_1_MEASURE_1_LABEL} Range",
+                    min_value=min_measure1_t1,
+                    max_value=max_measure1_t1,
+                    value=(min_measure1_t1, max_measure1_t1),
+                    format="%.2f",
+                    key="tab3_measure1_t1"
+                )
+            else:
+                measure1_range_t1 = None
+        
+        with col2:
+            # Table 1 DIMENSION_2 filter (if exists)
+            if 'DIMENSION_2' in df_table1.columns:
+                available_dimensions2_t1 = sorted([d for d in df_table1['DIMENSION_2'].unique() 
+                                                 if d is not None and pd.notna(d) and d != 'Unknown'])
+                selected_dimensions2_t1 = st.multiselect(
+                    f"{TABLE_1_DIMENSION_2_LABEL}",
+                    options=available_dimensions2_t1,
+                    default=available_dimensions2_t1[:5] if len(available_dimensions2_t1) >= 5 else available_dimensions2_t1,
+                    key="tab3_dimensions2_t1"
+                )
+            else:
+                selected_dimensions2_t1 = []
+            
+            # Table 1 MEASURE_2 range filter
+            if 'MEASURE_2' in df_table1.columns:
+                min_measure2_t1 = float(df_table1['MEASURE_2'].min())
+                max_measure2_t1 = float(df_table1['MEASURE_2'].max())
+                measure2_range_t1 = st.slider(
+                    f"{TABLE_1_MEASURE_2_LABEL} Range",
+                    min_value=min_measure2_t1,
+                    max_value=max_measure2_t1,
+                    value=(min_measure2_t1, max_measure2_t1),
+                    format="%.2f",
+                    key="tab3_measure2_t1"
+                )
+            else:
+                measure2_range_t1 = None
+        
+        with col3:
+            # Table 1 DATE_1 filter (year selection)
+            date1_years_t1 = []
+            if 'DATE_1' in df_table1.columns and not df_table1['DATE_1'].isna().all():
+                available_years_t1 = sorted([year for year in df_table1['DATE_1'].dt.year.dropna().unique() if pd.notna(year)])
+                if available_years_t1:
+                    date1_years_t1 = st.multiselect(
+                        f"{TABLE_1_DATE_1_LABEL}",
+                        options=available_years_t1,
+                        default=available_years_t1,
+                        key="tab3_date1_t1"
+                    )
+            
+            # Table 1 DATE_2 filter (date range)
+            date2_range_t1 = None
+            if 'DATE_2' in df_table1.columns and not df_table1['DATE_2'].isna().all():
+                min_date2_t1 = df_table1['DATE_2'].min()
+                max_date2_t1 = df_table1['DATE_2'].max()
+                if pd.notna(min_date2_t1) and pd.notna(max_date2_t1):
+                    if min_date2_t1.date() == max_date2_t1.date():
+                        st.info(f"All {TABLE_1_DATE_2_LABEL}: {min_date2_t1.strftime('%Y-%m-%d')}")
+                        date2_range_t1 = (min_date2_t1, max_date2_t1)
+                    else:
+                        unique_dates_t1 = sorted(df_table1['DATE_2'].dropna().dt.date.unique())
+                        date2_slider_range_t1 = st.select_slider(
+                            f"{TABLE_1_DATE_2_LABEL} Range",
+                            options=unique_dates_t1,
+                            value=(unique_dates_t1[0], unique_dates_t1[-1]),
+                            format_func=lambda x: x.strftime('%Y-%m-%d'),
+                            key="tab3_date2_t1"
+                        )
+                        start_date_t1 = pd.to_datetime(date2_slider_range_t1[0])
+                        end_date_t1 = pd.to_datetime(date2_slider_range_t1[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                        date2_range_t1 = (start_date_t1, end_date_t1)
+        
+        # Set empty values for removed Table 2 filters
+        selected_zip_codes_t2 = []
+        selected_dimensions1_t2 = []
+        selected_dimensions2_t2 = []
+        
+        # Set empty value for removed Table 1 ZIP filter
+        selected_zip_codes_t1 = []
+        
+        # Distance filter
+        st.markdown("### 📏 Distance Settings")
+        distance_miles = st.slider(
+            "Maximum Distance (miles)",
+            min_value=0.1,
+            max_value=10.0,
+            value=2.5,
+            step=0.1,
+            key="tab3_distance",
+            help="Find Table 1 records within this distance from the selected Table 2 record"
+        )
+        
+        # Show filter summary
+        st.markdown("### 📊 Filter Summary")
+        
+        # Apply Table 1 filters to show count
+        temp_filtered_t1 = apply_tab3_filters_table1(
+            df_table1, selected_zip_codes_t1, selected_dimensions1_t1, selected_dimensions2_t1,
+            measure1_range_t1, measure2_range_t1, date1_years_t1, date2_range_t1
+        )
+        st.info(f"**Table 1 Records Available for Proximity Analysis:** {len(temp_filtered_t1):,} of {len(df_table1):,} after filters")
+        
+        # Process selection and show results
+        if selected_record_name != 'Select a record...':
+            # Apply Table 2 filters first
+            filtered_table2_final = apply_tab3_filters_table2(
+                filtered_table2, 
+                selected_zip_codes_t2, 
+                selected_dimensions1_t2, 
+                selected_dimensions2_t2
+            )
+            
+            # Apply Table 1 filters
+            filtered_table1_final = apply_tab3_filters_table1(
+                df_table1,
+                selected_zip_codes_t1,
+                selected_dimensions1_t1,
+                selected_dimensions2_t1,
+                measure1_range_t1,
+                measure2_range_t1,
+                date1_years_t1,
+                date2_range_t1
+            )
+            
+            # Get the selected record from filtered Table 2
+            selected_record_df = filtered_table2_final[filtered_table2_final['RECORD_NAME'] == selected_record_name]
+            
+            if not selected_record_df.empty:
+                selected_record = selected_record_df.iloc[0]
+                
+                # Check if selected record has valid coordinates
+                if pd.notna(selected_record['LATITUDE']) and pd.notna(selected_record['LONGITUDE']):
+                    
+                    # Find nearby records from filtered Table 1
+                    nearby_records = get_records_within_distance(
+                        filtered_table1_final, 
+                        selected_record['LATITUDE'], 
+                        selected_record['LONGITUDE'], 
+                        distance_miles
+                    )
+                    
+                    if not nearby_records.empty:
+                        # Display summary metrics
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric(
+                                label="🎯 Selected Record",
+                                value=selected_record['RECORD_NAME'][:20] + "..." if len(selected_record['RECORD_NAME']) > 20 else selected_record['RECORD_NAME']
+                            )
+                        
+                        with col2:
+                            st.metric(
+                                label="📍 Nearby Records Found",
+                                value=f"{len(nearby_records):,}"
+                            )
+                        
+                        with col3:
+                            avg_distance = nearby_records['DISTANCE_MILES'].mean()
+                            st.metric(
+                                label="📏 Average Distance",
+                                value=f"{avg_distance:.1f} miles"
+                            )
+                        
+                        st.markdown("---")
+                        
+                        # Create and display proximity map
+                        proximity_map = create_proximity_map(selected_record, nearby_records, distance_miles)
+                        if proximity_map is not None:
+                            st.pydeck_chart(proximity_map)
+                        
+                        # Data table with distances
+                        st.markdown("---")
+                        st.markdown("### 📋 Nearby Records Table")
+                        
+                        if not nearby_records.empty:
+                            # Display options
+                            col_table1, col_table2 = st.columns([1, 3])
+                            with col_table1:
+                                show_records3 = st.selectbox(
+                                    "Records to display:",
+                                    [25, 50, 100, "All"],
+                                    index=0,
+                                    key="tab3_show_records"
+                                )
+                            
+                            # Apply display limit
+                            if show_records3 == "All":
+                                display_df3 = nearby_records
+                            else:
+                                display_df3 = nearby_records.head(show_records3)
+                            
+                            # Select columns for display
+                            display_columns3 = [
+                                'RECORD_ID', 'RECORD_NAME', 'ZIP_CODE', 'DIMENSION_1', 
+                                'MEASURE_1', 'MEASURE_2', 'DISTANCE_MILES', 'CITY', 'STATE'
+                            ]
+                            
+                            available_columns3 = [col for col in display_columns3 if col in display_df3.columns]
+                            table_df3 = display_df3[available_columns3].copy()
+                            
+                            # Round distance for better display
+                            if 'DISTANCE_MILES' in table_df3.columns:
+                                table_df3['DISTANCE_MILES'] = table_df3['DISTANCE_MILES'].round(2)
+                            
+                            st.dataframe(
+                                table_df3,
+                                use_container_width=True,
+                                height=400,
+                                column_config={
+                                    "RECORD_ID": "Record ID",
+                                    "RECORD_NAME": "Record Name", 
+                                    "ZIP_CODE": "Zip Code",
+                                    "DIMENSION_1": TABLE_1_DIMENSION_1_LABEL,
+                                    "MEASURE_1": TABLE_1_MEASURE_1_LABEL,
+                                    "MEASURE_2": TABLE_1_MEASURE_2_LABEL,
+                                    "DISTANCE_MILES": st.column_config.NumberColumn(
+                                        "Distance (miles)",
+                                        format="%.2f"
+                                    ),
+                                    "CITY": "City",
+                                    "STATE": "State"
+                                }
+                            )
+                            
+                            # Download data
+                            col_download1, col_download2 = st.columns(2)
+                            with col_download1:
+                                csv_data3 = nearby_records.to_csv(index=False).encode('utf-8')
+                                st.download_button(
+                                    label="📥 Download Proximity Data",
+                                    data=csv_data3,
+                                    file_name=f"proximity_analysis_{len(nearby_records)}_records.csv",
+                                    mime="text/csv",
+                                    help="Download proximity analysis results"
+                                )
+                            
+                            if show_records3 != "All" and len(nearby_records) > show_records3:
+                                st.info(f"Showing first {show_records3} of {len(nearby_records)} records. Use download button to get complete data.")
+                        
+                    else:
+                        st.warning(f"No records from Table 1 found within {distance_miles} miles of the selected record.")
+                        
+                        # Still show the selected record on a map
+                        selected_only_map = create_proximity_map(selected_record, pd.DataFrame(), distance_miles)
+                        if selected_only_map is not None:
+                            st.pydeck_chart(selected_only_map)
+                
+                else:
+                    st.error("Selected record does not have valid coordinates (latitude/longitude).")
+            else:
+                st.error("Selected record not found.")
+        else:
+            st.info("👆 Please select a record from Table 2 to begin proximity analysis.")
+
+if __name__ == "__main__":
+    main()
