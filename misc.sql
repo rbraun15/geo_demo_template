@@ -1,0 +1,125 @@
+
+
+CREATE DATABASE DEMO_GEO_TEMPLATE;
+CREATE SCHEMA DEMO_GEO_TEMPLATE.RAW;
+USE DATABASE DEMO_GEO_TEMPLATE;
+USE SCHEMA RAW;
+
+CREATE or REPLACE TABLE DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_1 (
+    RECORD_ID VARCHAR(50),
+    RECORD_CREATED_DATE DATE,
+    ADDRESS_ID VARCHAR(10),
+    STREET_ADDRESS VARCHAR(100),
+    CITY VARCHAR(100),
+    STATE VARCHAR(50),
+    ZIP_CODE VARCHAR(10),
+    LATITUDE FLOAT,
+    LONGITUDE FLOAT,
+    H3_LEVEL_7 VARCHAR(20),
+    H3_LEVEL_8 VARCHAR(20),
+    H3_LEVEL_9 VARCHAR(20),
+    DATE_1 DATE,
+    DATE_2 DATE,
+    DATE_3 DATE,
+    DATE_4 DATE,
+    DIMENSION_1 VARCHAR(100),
+    DIMENSION_2 VARCHAR(100),
+    DIMENSION_3 VARCHAR(100),
+    DIMENSION_4 VARCHAR(100),
+    MEASURE_1 NUMBER(10,2),
+    MEASURE_2 NUMBER(12,2),
+    MEASURE_3 NUMBER(12,2),
+    MEASURE_4 NUMBER(12,2),
+    RECORD_NAME VARCHAR(200),
+    ENTITY_NAME VARCHAR(200),
+    ENTITY_TYPE VARCHAR(100),
+    EMAIL VARCHAR(100),
+    PHONE VARCHAR(20)
+);
+
+
+
+select * from DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_1 limit 5;
+
+
+
+insert into DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_1
+
+(
+RECORD_ID,
+STREET_ADDRESS,
+CITY,
+STATE,
+ZIP_CODE,
+LATITUDE,
+LONGITUDE,
+H3_LEVEL_7,
+H3_LEVEL_8,
+H3_LEVEL_9,
+DATE_1,
+DATE_2,
+DIMENSION_1,
+DIMENSION_2,
+DIMENSION_3,
+MEASURE_1,
+MEASURE_2,
+MEASURE_3,
+RECORD_NAME,
+ENTITY_NAME,
+ENTITY_TYPE,
+EMAIL,
+PHONE
+)
+select
+donor_id, 
+street_address,  
+city, 
+state, 
+zip_code, 
+latitude, 
+longitude, 
+h3_level_7, 
+h3_level_8, 
+h3_level_9,
+last_donation_date,
+created_date,
+major,
+graduation_year,
+donor_segment,
+annual_donation_amount,
+cumulative_donation_amount,
+age,
+full_name,
+'Clemson',
+'College',
+EMAIL,
+'864-266-1278'
+
+
+from HIGHER_ED_DEMO.ALUMNI_TARGETING.ALUMNI_DONORS  
+
+where 
+city is not null and 
+full_name is not null; 
+
+
+select max(date_2), min(date_2) from DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_1
+select date_2 from DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_1 where zip_code='29650';
+update DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_1 set date_2 = '2025-06-01' where zip_code='29650';
+update DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_1 set date_2 = '2024-06-01' where zip_code='29680';
+
+
+create or replace table DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_2 as select * from DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_1 limit 30 ;
+
+
+
+
+select entity_name, entity_type from DEMO_GEO_TEMPLATE.RAW.MAP_TABLE_2;
+
+
+
+
+
+
+
+
