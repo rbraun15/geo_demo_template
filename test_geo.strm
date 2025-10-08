@@ -1,0 +1,74 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import pydeck as pdk
+
+# installed packages - pydeck-carto 0.2.0, snowflake-snowpark-python & streamit - both latest
+# --- Configuration ---
+# Coordinates centered around Greenville, SC (just an example for context)
+INITIAL_VIEW_STATE = {
+    "latitude": 34.8526,
+    "longitude": -82.3940,
+    "zoom": 11,
+    "pitch": 0, # PITCH IS SET TO 0 FOR A FLAT, TOP-DOWN MAP VIEW
+}
+
+# Define 5 reliable map styles using their full URLs to bypass alias issues
+MAP_STYLES = {
+    "CARTO Light (Minimalist)": "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+    "CARTO Dark Matter": "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+    "CARTO Voyager (Full Detail)": "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
+    "CARTO Positron No Labels": "https://basemaps.cartocdn.com/gl/basic-gl-style/style.json",
+    "CARTO Antique/Sepia Tone": "https://basemaps.cartocdn.com/gl/base-gl-style/style.json"
+}
+
+# Generate some random data points around the initial location
+DATA_POINTS = 50
+data = pd.DataFrame(
+    {
+        "lat": INITIAL_VIEW_STATE["latitude"] + np.random.randn(DATA_POINTS) * 0.02,
+        "lon": INITIAL_VIEW_STATE["longitude"] + np.random.randn(DATA_POINTS) * 0.02,
+    }
+)
+
+st.title("Streamlit Map Provider & Style Demo")
+st.markdown("Use the selector below to change the base map instantly. All maps use **Pitch: 0** for a flat view.")
+
+# --- Map Selector Component ---
+
+style_name = st.selectbox(
+    "Select a Base Map Style",
+    options=list(MAP_STYLES.keys()),
+    index=2 # Default to Voyager, which you wanted to see
+)
+
+# Get the full URL for the selected style name
+selected_map_style_url = MAP_STYLES[style_name]
+
+
+# --- PyDeck/Streamlit Map Component ---
+
+st.pydeck_chart(
+    pdk.Deck(
+        map_style=selected_map_style_url, # Using the selected URL
+        initial_view_state=pdk.ViewState(
+            latitude=INITIAL_VIEW_STATE["latitude"],
+            longitude=INITIAL_VIEW_STATE["longitude"],
+            zoom=INITIAL_VIEW_STATE["zoom"],
+            pitch=INITIAL_VIEW_STATE["pitch"],
+        ),
+        layers=[
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=data,
+                get_position=["lon", "lat"],
+                get_color="[200, 30, 0, 160]",
+                get_radius=100,
+            ),
+        ],
+        tooltip={
+            "html": "<b>Latitude:</b> {lat} <br/> <b>Longitude:</b> {lon}",
+            "style": {"color": "white"},
+        }
+    )
+)
